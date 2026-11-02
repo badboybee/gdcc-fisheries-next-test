@@ -1,0 +1,19 @@
+name: Deploy Fisheries Next
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Deploy Kubernetes
+        env:
+          KUBECONFIG: /home/github-runner/.kube/config
+        run: |
+          kubectl apply -f k8s/ -n fisheries-next
+          kubectl get deployments -n fisheries-next
