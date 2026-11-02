@@ -1,5 +1,5 @@
 
-name: Deploy Fisheries Next
+name: Deploy Fisheries Next - Nginx Test
 
 on:
   workflow_dispatch:
@@ -7,9 +7,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: fisheries-next-nginx-test
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: self-hosted
+
+    env:
+      KUBECONFIG: /home/github-runner/.kube/config
+      NAMESPACE: fisheries-next
+      DEPLOYMENT: nginx-test
 
     steps:
       - name: Checkout Repository
@@ -19,31 +28,113 @@ jobs:
         run: |
           whoami
           hostname
-          command -v kubectl
           kubectl version --client
 
       - name: Check Kubernetes Connection
-        env:
-          KUBECONFIG: /home/github-runner/.kube/config
         run: |
           kubectl config current-context
-          kubectl get deployments -n fisheries-next
+          kubectl get deployments -n "$NAMESPACE"
 
       - name: Check Kubernetes Permissions
-        env:
-          KUBECONFIG: /home/github-runner/.kube/config
         run: |
-          kubectl auth can-i get deployments -n fisheries-next
-          kubectl auth can-i create deployments -n fisheries-next
-          kubectl auth can-i patch deployments -n fisheries-next
+          for resource in deployments services; do
+            for verb in get create patch; do
+              kubectl auth can-i "$verb" "$resource" \
+                -n "$NAMESPACE" --quiet || {
+                  echo "Missing permission: $verb $resource"
+                  exit 1
+                }
+            done
+          done
 
-      - name: Check Manifest Directory
+      - name: Deploy Nginx
         run: |
-          pwd
-          ls -la
-          if [ -d k8s ]; then
-            find k8s -maxdepth 2 -type f
-          else
-            echo "ERROR: k8s directory not found"
-            exit 1
-          fi
+          cat <<'EOF' | kubectl apply -n fisheries-next -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nginx-test
+            namespace: fisheries-next
+            labels:
+              app: nginx-test
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: nginx-test
+            template:
+              metadata:
+                labels:
+                  app: nginx-test
+              spec:
+                containers:
+                  - name: nginx
+                    image: nginx:1.28-alpine
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - containerPort: 80
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 200m
+                        memory: 128Mi
+                    readinessProbe:
+                      httpGet:
+                        path: /
+                        port: 80
+                      initialDelaySeconds: 3
+                      periodSeconds: 5
+                    livenessProbe:
+                      httpGet:
+                        path: /
+                        port: 80
+                      initialDelaySeconds: 10
+                      periodSeconds: 10
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nginx-test
+            namespace: fisheries-next
+          spec:
+            type: ClusterIP
+            selector:
+              app: nginx-test
+            ports:
+              - port: 80
+                targetPort: 80
+                protocol: TCP
+          EOF
+
+      - name: Wait for Rollout
+        run: |
+          kubectl rollout status \
+            deployment/"$DEPLOYMENT" \
+            -n "$NAMESPACE" \
+            --timeout=180s
+
+      - name: Verify Deployment
+        run: |
+          kubectl get deployment "$DEPLOYMENT" \
+            -n "$NAMESPACE"
+
+          kubectl get pods \
+            -n "$NAMESPACE" \
+            -l app=nginx-test -o wide
+
+          kubectl get service nginx-test \
+            -n "$NAMESPACE"
+
+      - name: Show Diagnostics on Failure
+        if: failure()
+        run: |
+          kubectl describe deployment nginx-test \
+            -n "$NAMESPACE" || true
+
+          kubectl get pods -n "$NAMESPACE" \
+            -l app=nginx-test -o wide || true
+
+          kubectl get events -n "$NAMESPACE" \
+            --sort-by=.lastTimestamp | tail -30 || true
