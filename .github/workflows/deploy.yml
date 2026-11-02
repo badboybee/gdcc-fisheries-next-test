@@ -1,7 +1,11 @@
+
 name: Deploy Fisheries Next
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
@@ -11,9 +15,35 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Deploy Kubernetes
+      - name: Check Runner Environment
+        run: |
+          whoami
+          hostname
+          command -v kubectl
+          kubectl version --client
+
+      - name: Check Kubernetes Connection
         env:
           KUBECONFIG: /home/github-runner/.kube/config
         run: |
-          kubectl apply -f k8s/ -n fisheries-next
+          kubectl config current-context
           kubectl get deployments -n fisheries-next
+
+      - name: Check Kubernetes Permissions
+        env:
+          KUBECONFIG: /home/github-runner/.kube/config
+        run: |
+          kubectl auth can-i get deployments -n fisheries-next
+          kubectl auth can-i create deployments -n fisheries-next
+          kubectl auth can-i patch deployments -n fisheries-next
+
+      - name: Check Manifest Directory
+        run: |
+          pwd
+          ls -la
+          if [ -d k8s ]; then
+            find k8s -maxdepth 2 -type f
+          else
+            echo "ERROR: k8s directory not found"
+            exit 1
+          fi
